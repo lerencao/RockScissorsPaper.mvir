@@ -1,0 +1,5 @@
+import {{sender}}.RockScissorsPaperModule;
+main(game_address: address, hand: u64) {
+       RockScissorsPaperModule.participate(move(game_address), move(hand));
+       return;
+}

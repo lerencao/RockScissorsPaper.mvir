@@ -1,0 +1,5 @@
+import {{sender}}.RockScissorsPaperModule;
+main(secret: bytearray, hand: u64) {
+    RockScissorsPaperModule.reveal(move(secret), move(hand));
+    return;
+}

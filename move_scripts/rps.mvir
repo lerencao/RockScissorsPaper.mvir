@@ -1,0 +1,216 @@
+module RockScissorsPaperModule {
+    import 0x0.LibraCoin;
+    import 0x0.LibraAccount;
+    import 0x0.Hash;
+    import 0x0.U64Util;
+    import 0x0.BytearrayUtil;
+
+    resource T {
+        stake: u64,
+        my_coin: LibraCoin.T,
+        my_hand_secret_hash: bytearray,
+        duel_hand: u64,
+        duel_coin: LibraCoin.T,
+        duel_address: address,
+    }
+
+    // sender create a rsp resource, wait someone to participate,
+    // once, someone entered, event is emited, and
+    // sender will reveal it hand with it secret
+    public create(stake: u64, secret_hash: bytearray) {
+        // check rsp not exists
+        let my_address: address;
+        let my_stake_coin: LibraCoin.T;
+        let t: Self.T;
+
+        my_address = get_txn_sender();
+
+        assert(!exists<T>(copy(my_address)), 400);
+
+
+        my_stake_coin = LibraAccount.withdraw_from_sender(copy(stake));
+
+        t = T {
+            stake: copy(stake),
+            my_coin: move(my_stake_coin),
+            my_hand_secret_hash: move(secret_hash),
+            duel_hand: 0,
+            duel_coin: LibraCoin.zero(),
+            duel_address: copy(my_address),
+        };
+        move_to_sender<T>(move(t));
+        return;
+    }
+
+    // hand:
+    // 1: rock
+    // 2: scissors
+    // 3: paper
+    public participate(rsp_address: address, hand: u64) acquires T {
+        let duel_rsp_ref_mut: &mut Self.T;
+        let my_address: address;
+        let my_stake_coin: LibraCoin.T;
+        let stake: u64;
+
+        // make sure hand value is valid
+        assert(Self.check_hand_valid(copy(hand)), 400);
+
+
+        //  make sure game exists
+        assert(exists<T>(copy(rsp_address)), 403);
+
+        duel_rsp_ref_mut = borrow_global_mut<T>(copy(rsp_address));
+        // make sure no one enter the game
+        assert(*&copy(duel_rsp_ref_mut).duel_address == copy(rsp_address), 401);
+
+        // withdraw from duel, and deposit into game account
+        my_address = get_txn_sender();
+        stake = *(&copy(duel_rsp_ref_mut).stake);
+        my_stake_coin = LibraAccount.withdraw_from_sender(move(stake));
+        LibraCoin.deposit(&mut copy(duel_rsp_ref_mut).duel_coin, move(my_stake_coin));
+
+        // update the duel info into game account
+        *(&mut copy(duel_rsp_ref_mut).duel_hand) = move(hand);
+        *(&mut move(duel_rsp_ref_mut).duel_address) = move(my_address);
+        return;
+    }
+
+
+    public reveal(secret: bytearray, hand: u64) acquires T {
+        // TODO: check timeout
+        let transaction_sender: address;
+
+        let rsp_ref: &Self.T;
+        let rsp: Self.T;
+        let judge_result: u64;
+        assert(Self.check_hand_valid(copy(hand)), 400);
+
+        transaction_sender = get_txn_sender();
+        // check game exists
+        assert(exists<T>(copy(transaction_sender)), 403);
+        rsp_ref = borrow_global<T>(copy(transaction_sender));
+
+
+        // check duel entered
+        assert(*&copy(rsp_ref).duel_address != copy(transaction_sender), 402);
+
+        // check secret hash
+        assert(Self.verify(move(secret), copy(hand), *&copy(rsp_ref).my_hand_secret_hash), 401);
+
+        //  do judge
+        judge_result = Self.judge(copy(hand), *(&move(rsp_ref).duel_hand));
+
+        // do the judge result
+        rsp = move_from<T>(copy(transaction_sender));
+        Self.pay(move(transaction_sender), move(judge_result), move(rsp));
+        return;
+    }
+
+    // help functions
+    public sign_hash(secret: bytearray, hand: u64): bytearray {
+        let hand_in_bytearray: bytearray;
+        let secret_and_hand: bytearray;
+        let hand_secret_hash: bytearray;
+
+        hand_in_bytearray = U64Util.u64_to_bytes(copy(hand));
+        secret_and_hand = BytearrayUtil.bytearray_concat(
+            move(secret),
+            move(hand_in_bytearray)
+        );
+
+        hand_secret_hash = Hash.sha2_256(move(secret_and_hand));
+        return move(hand_secret_hash);
+    }
+
+    public verify(secret: bytearray, hand: u64, diclaimed_secret_hash: bytearray): bool {
+        let revealed_hand_secret_hash: bytearray;
+        revealed_hand_secret_hash = Self.sign_hash(move(secret), move(hand));
+
+        return move(revealed_hand_secret_hash) == move(diclaimed_secret_hash);
+    }
+
+    // helper methods
+    public exists(account: address): bool {
+        return exists<T>(move(account));
+    }
+
+    public coin_value(account: address): u64 acquires T {
+        let rsp_ref: &Self.T;
+
+        assert(Self.exists(copy(account)), 101);
+        rsp_ref = borrow_global<T>(move(account));
+        return LibraCoin.value(&copy(rsp_ref).my_coin) + LibraCoin.value(&copy(rsp_ref).duel_coin);
+    }
+
+    pay(me: address, judge_result: u64, rsp: Self.T) {
+        let my_coin: LibraCoin.T;
+        let duel_coin: LibraCoin.T;
+        let duel_address: address;
+        let stake: u64;
+        let my_hand_secret_hash: bytearray;
+        let duel_hand: u64;
+
+        T {
+            stake,
+            my_coin,
+            my_hand_secret_hash,
+            duel_hand,
+            duel_coin,
+            duel_address,
+        } = move(rsp);
+
+        if (0 == copy(judge_result)) {
+            LibraAccount.deposit(move(me), move(my_coin));
+            LibraAccount.deposit(move(duel_address), move(duel_coin));
+            return;
+        }
+        if (1 == copy(judge_result)) {
+            LibraAccount.deposit(copy(me), move(my_coin));
+            LibraAccount.deposit(move(me), move(duel_coin));
+            return;
+        }
+
+        LibraAccount.deposit(copy(duel_address), move(my_coin));
+        LibraAccount.deposit(move(duel_address), move(duel_coin));
+        return;
+    }
+
+    // 1: rock
+    // 2: scissors
+    // 3: paper
+    // output:
+    // 0: equal
+    // 1: hand_1 win
+    // 2: hand_2 win
+    judge(hand_1: u64, hand_2: u64): u64 {
+        if (copy(hand_1) == copy(hand_2)) {
+            return 0;
+        }
+
+        if (copy(hand_1) == 1) {
+            if (copy(hand_2) == 2) {
+                return 1;
+            } else {
+                return 2;
+            }
+        }
+
+        if (copy(hand_1) == 2) {
+            if (copy(hand_2) == 3) {
+                return 1;
+            } else {
+                return 2;
+            }
+        } else {
+            if (copy(hand_2) == 1) {
+                return 1;
+            } else {
+                return 2;
+            }
+        }
+    }
+
+    check_hand_valid(hand: u64): bool {
+        return (copy(hand) == 1) || (copy(hand) == 2) || (copy(hand) == 3);
+    }
+}

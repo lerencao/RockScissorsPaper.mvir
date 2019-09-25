@@ -1,0 +1,5 @@
+import {{sender}}.RockScissorsPaperModule;
+main(bat: u64, secret_hash: bytearray) {
+    RockScissorsPaperModule.create(move(bat), move(secret_hash));
+    return;
+}
